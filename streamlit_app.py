@@ -630,7 +630,7 @@ def build_feature_dataset(base_dir: Path | None = None, as_of_date=None) -> dict
         "leave_type_monthly_features": leave_type_monthly_features,
         "current_live_headcount": int(employee_master_live["EmpNo"].dropna().nunique()),
     }
-
+import os
 
 def load_model_bundle(base_dir: Path | None = None) -> dict[str, object]:
     paths = get_project_paths(base_dir)
@@ -1566,8 +1566,8 @@ if future_end_max < future_start_min:
     )
     st.stop()
 
-st.title("Employee Leave Forecasting System")
-st.caption("Forecast daily leave demand and convert it into workforce planning numbers.")
+st.title("OptiShift Intelligence")
+# st.caption("Forecast daily leave demand and convert it into workforce planning numbers.")
 
 # Initialize variables for sidebar
 prediction_date = default_prediction_date
@@ -2299,20 +2299,7 @@ with tab_intelligence:
 
             chart_col, risk_col = st.columns([1.2, 1])
             with chart_col:
-                st.plotly_chart(plot_leave_intelligence_trend(filtered_summary), width="stretch")
-                with st.expander("📈 Understanding the Trend Chart", expanded=False):
-                    st.markdown("""
-                    **Two Lines Explained:**
-                    - **Blue line**: Total employees on leave (all types combined)
-                    - **Orange dotted line**: Staffing-relevant employees (need backfill/coverage)
-                    
-                    **Gap Between Lines = Special Leave:**
-                    - Wide gap → Many comp-offs or special leave on that day
-                    - Narrow gap → Mostly regular leave (needs backfill)
-                    
-                    **Upward Trend** → Leave demand increasing (consider hiring/cross-training)  
-                    **Flat/Random** → Consistent pattern across time
-                    """)
+                st.empty()
             with risk_col:
                 st.plotly_chart(plot_cost_centre_risk(filtered_cost_centre), width="stretch")
                 with st.expander("🎯 Risk Score Explained", expanded=False):
