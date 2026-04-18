@@ -20,6 +20,7 @@ ARTIFACT_DIR = PROJECT_DIR / "artifacts"
 ARCHIVE_DIR = ARTIFACT_DIR / "archive"
 PRODUCTION_MODEL_PATH = ARTIFACT_DIR / "leave_forecasting_model.pkl"
 PRODUCTION_METADATA_PATH = ARTIFACT_DIR / "leave_forecasting_metadata.pkl"
+FEATURE_BUNDLE_PATH = ARTIFACT_DIR / "leave_forecasting_bundle.pkl"
 DATA_PATH = PROJECT_DIR / "Data" / "Combined_All_Leave_Data.csv"
 EMPLOYEE_MASTER_PATH = PROJECT_DIR / "Employee Master - Feb 2026 Team Member.xlsx"
 
@@ -51,6 +52,29 @@ def ensure_inputs() -> None:
         raise FileNotFoundError(f"Missing required input files: {missing}")
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_feature_bundle(dataset_bundle: dict[str, object]) -> None:
+    slim_bundle = {
+        key: dataset_bundle[key]
+        for key in [
+            "feature_df",
+            "model_df",
+            "full_expanded_frame",
+            "holiday_calendar",
+            "feature_columns",
+            "engineered_feature_columns",
+            "feature_fill_columns",
+            "master_workforce_features",
+            "master_feature_columns",
+            "department_daily_features",
+            "department_encoded",
+            "leave_type_daily_features",
+            "leave_type_monthly_features",
+            "current_live_headcount",
+        ]
+    }
+    joblib.dump(slim_bundle, FEATURE_BUNDLE_PATH)
 
 
 def build_training_frame(dataset_bundle: dict[str, object], max_rows: int) -> pd.DataFrame:
@@ -218,6 +242,7 @@ if __name__ == "__main__":
     as_of_date = args.as_of_date or infer_default_as_of_date(DATA_PATH)
     ns = load_forecasting_namespace(APP_PATH)
     dataset_bundle = ns["build_feature_dataset"](PROJECT_DIR, as_of_date=as_of_date)
+    save_feature_bundle(dataset_bundle)
     model_df = build_training_frame(dataset_bundle, args.max_rows)
 
     n_rows = len(model_df)

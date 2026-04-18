@@ -24,6 +24,30 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 
 
+_st_dataframe = st.dataframe
+_st_plotly_chart = st.plotly_chart
+
+
+def _compat_container_width(kwargs: dict[str, object]) -> dict[str, object]:
+    if kwargs.get("width") == "stretch":
+        kwargs = dict(kwargs)
+        kwargs.pop("width", None)
+        kwargs["use_container_width"] = True
+    return kwargs
+
+
+def _dataframe_compat(*args, **kwargs):
+    return _st_dataframe(*args, **_compat_container_width(kwargs))
+
+
+def _plotly_chart_compat(*args, **kwargs):
+    return _st_plotly_chart(*args, **_compat_container_width(kwargs))
+
+
+st.dataframe = _dataframe_compat
+st.plotly_chart = _plotly_chart_compat
+
+
 DATE_COLUMNS = ["From Date", "To Date", "Applied On", "Approved On"]
 DROP_COLUMNS = ["Comments", "Approver Comments"]
 TEXT_FILL_COLUMNS = [
@@ -56,6 +80,7 @@ def get_project_paths(base_dir: Path | None = None) -> dict[str, Path]:
         "employee_master_path": project_dir / "Employee Master - Feb 2026 Team Member.xlsx",
         "model_path": project_dir / "artifacts" / "leave_forecasting_model.pkl",
         "metadata_path": project_dir / "artifacts" / "leave_forecasting_metadata.pkl",
+        "bundle_cache_path": project_dir / "artifacts" / "leave_forecasting_bundle.pkl",
     }
 
 
@@ -699,8 +724,35 @@ def load_model_bundle(base_dir: Path | None = None) -> dict[str, object]:
 
     try:
         model = joblib.load(paths["model_path"])
-        bundle_cutoff_date = metadata.get("as_of_date") or metadata.get("training_end_date") or str(date.today())
-        bundle = build_feature_dataset(base_dir, as_of_date=bundle_cutoff_date)
+        bundle = None
+        if paths["bundle_cache_path"].exists():
+            try:
+                bundle = joblib.load(paths["bundle_cache_path"])
+            except Exception:
+                bundle = None
+        if not isinstance(bundle, dict) or "full_expanded_frame" not in bundle:
+            bundle_cutoff_date = metadata.get("as_of_date") or metadata.get("training_end_date") or str(date.today())
+            bundle = build_feature_dataset(base_dir, as_of_date=bundle_cutoff_date)
+            slim_bundle = {
+                key: bundle[key]
+                for key in [
+                    "feature_df",
+                    "model_df",
+                    "full_expanded_frame",
+                    "holiday_calendar",
+                    "feature_columns",
+                    "engineered_feature_columns",
+                    "feature_fill_columns",
+                    "master_workforce_features",
+                    "master_feature_columns",
+                    "department_daily_features",
+                    "department_encoded",
+                    "leave_type_daily_features",
+                    "leave_type_monthly_features",
+                    "current_live_headcount",
+                ]
+            }
+            joblib.dump(slim_bundle, paths["bundle_cache_path"])
         bundle["model"] = model
         bundle["metadata"] = metadata
         bundle["feature_columns"] = list(metadata.get("feature_columns", bundle["feature_columns"]))
@@ -1598,14 +1650,13 @@ def load_bundle():
 
 
 @st.cache_data
-def load_evaluation():
-    loaded_bundle = load_bundle()
-    if not bundle_is_ready(loaded_bundle):
+def load_evaluation(_loaded_bundle: dict[str, object]):
+    if not bundle_is_ready(_loaded_bundle):
         empty_metrics = pd.DataFrame(columns=["Model", "MAE", "RMSE", "MAPE", "R2", "WAPE", "SMAPE"])
         empty_comparison = pd.DataFrame(columns=["Date", "Actual_Leave_Count", "Predicted_Leave_Count", "Naive_Lag1_Prediction"])
         return empty_metrics, empty_comparison
     try:
-        return evaluate_saved_model(Path(__file__).resolve().parent, bundle=loaded_bundle)
+        return evaluate_saved_model(Path(__file__).resolve().parent, bundle=_loaded_bundle)
     except Exception as exc:
         st.warning(f"Unable to evaluate the saved model: {exc}. Showing an empty evaluation view.")
         empty_metrics = pd.DataFrame(columns=["Model", "MAE", "RMSE", "MAPE", "R2", "WAPE", "SMAPE"])
@@ -1614,7 +1665,7 @@ def load_evaluation():
 
 
 bundle = load_bundle()
-metrics_df, comparison_df = load_evaluation()
+metrics_df, comparison_df = load_evaluation(bundle)
 project_paths = get_project_paths(Path(__file__).resolve().parent)
 if not bundle_is_ready(bundle):
     st.error("The forecasting model bundle is missing from this checkout, so the ML dashboard cannot start.")
@@ -1722,7 +1773,7 @@ with st.sidebar:
     )
     
     st.divider()
-    generate_forecast = st.button("Generate Forecast", type="primary", width="stretch")
+    generate_forecast = st.button("Generate Forecast", type="primary")
 
 if forecast_type == "Weekly" and forecast_window_days <= 0:
     st.error("The weekly end date must be on or after the start date.")
