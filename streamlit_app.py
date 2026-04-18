@@ -59,6 +59,56 @@ def get_project_paths(base_dir: Path | None = None) -> dict[str, Path]:
     }
 
 
+def build_unavailable_bundle(base_dir: Path | None = None, missing_paths: list[Path] | None = None) -> dict[str, object]:
+    paths = get_project_paths(base_dir)
+    missing_paths = missing_paths or []
+    metadata = {
+        "bundle_status": "unavailable",
+        "missing_paths": [str(path) for path in missing_paths],
+        "setup_hint": (
+            "Run retrain_model.py after restoring the Data folder and employee master file, "
+            "or open streamlit_sql_visualization.py for the non-ML dashboard."
+        ),
+    }
+    empty_frame = pd.DataFrame({"Date": pd.to_datetime([])})
+    return {
+        "raw_frame": pd.DataFrame(),
+        "clean_frame": pd.DataFrame(),
+        "expanded_frame": pd.DataFrame(),
+        "full_expanded_frame": pd.DataFrame(),
+        "feature_df": empty_frame.copy(),
+        "model_df": empty_frame.copy(),
+        "holiday_calendar": build_holiday_calendar(date.today().year, date.today().year),
+        "feature_columns": [],
+        "engineered_feature_columns": [],
+        "feature_fill_columns": [],
+        "master_workforce_features": empty_frame.copy(),
+        "master_feature_columns": [],
+        "department_daily_features": empty_frame.copy(),
+        "department_encoded": empty_frame.copy(),
+        "leave_type_daily_features": empty_frame.copy(),
+        "leave_type_monthly_features": empty_frame.copy(),
+        "current_live_headcount": 0,
+        "model": None,
+        "metadata": metadata,
+    }
+
+
+def bundle_is_ready(bundle: dict[str, object]) -> bool:
+    model = bundle.get("model")
+    feature_df = bundle.get("feature_df")
+    model_df = bundle.get("model_df")
+    feature_columns = bundle.get("feature_columns", [])
+    return (
+        model is not None
+        and isinstance(feature_df, pd.DataFrame)
+        and not feature_df.empty
+        and isinstance(model_df, pd.DataFrame)
+        and not model_df.empty
+        and bool(feature_columns)
+    )
+
+
 def slugify_label(value: str) -> str:
     cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", str(value).strip().lower())
     return cleaned.strip("_") or "unknown"
@@ -634,6 +684,11 @@ import os
 
 def load_model_bundle(base_dir: Path | None = None) -> dict[str, object]:
     paths = get_project_paths(base_dir)
+    required_inputs = [paths["data_path"], paths["employee_master_path"], paths["model_path"]]
+    missing_inputs = [path for path in required_inputs if not path.exists()]
+    if missing_inputs:
+        return build_unavailable_bundle(base_dir, missing_inputs)
+
     metadata = joblib.load(paths["metadata_path"]) if paths["metadata_path"].exists() else {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -641,13 +696,20 @@ def load_model_bundle(base_dir: Path | None = None) -> dict[str, object]:
     missing_keys = [key for key in required_metadata_keys if key not in metadata]
     if missing_keys:
         st.warning(f"Model metadata is missing keys: {missing_keys}. Using safe fallbacks.")
-    model = joblib.load(paths["model_path"])
-    bundle_cutoff_date = metadata.get("as_of_date") or metadata.get("training_end_date") or str(date.today())
-    bundle = build_feature_dataset(base_dir, as_of_date=bundle_cutoff_date)
-    bundle["model"] = model
-    bundle["metadata"] = metadata
-    bundle["feature_columns"] = list(metadata.get("feature_columns", bundle["feature_columns"]))
-    return bundle
+
+    try:
+        model = joblib.load(paths["model_path"])
+        bundle_cutoff_date = metadata.get("as_of_date") or metadata.get("training_end_date") or str(date.today())
+        bundle = build_feature_dataset(base_dir, as_of_date=bundle_cutoff_date)
+        bundle["model"] = model
+        bundle["metadata"] = metadata
+        bundle["feature_columns"] = list(metadata.get("feature_columns", bundle["feature_columns"]))
+        return bundle
+    except FileNotFoundError:
+        return build_unavailable_bundle(base_dir, [paths["model_path"], paths["data_path"], paths["employee_master_path"]])
+    except Exception as exc:
+        st.warning(f"Unable to load the forecasting bundle: {exc}. Starting in limited mode.")
+        return build_unavailable_bundle(base_dir, [paths["model_path"], paths["data_path"], paths["employee_master_path"]])
 
 
 def weighted_absolute_percentage_error(y_true, y_pred) -> float:
@@ -1537,12 +1599,32 @@ def load_bundle():
 
 @st.cache_data
 def load_evaluation():
-    return evaluate_saved_model(Path(__file__).resolve().parent, bundle=load_bundle())
+    loaded_bundle = load_bundle()
+    if not bundle_is_ready(loaded_bundle):
+        empty_metrics = pd.DataFrame(columns=["Model", "MAE", "RMSE", "MAPE", "R2", "WAPE", "SMAPE"])
+        empty_comparison = pd.DataFrame(columns=["Date", "Actual_Leave_Count", "Predicted_Leave_Count", "Naive_Lag1_Prediction"])
+        return empty_metrics, empty_comparison
+    try:
+        return evaluate_saved_model(Path(__file__).resolve().parent, bundle=loaded_bundle)
+    except Exception as exc:
+        st.warning(f"Unable to evaluate the saved model: {exc}. Showing an empty evaluation view.")
+        empty_metrics = pd.DataFrame(columns=["Model", "MAE", "RMSE", "MAPE", "R2", "WAPE", "SMAPE"])
+        empty_comparison = pd.DataFrame(columns=["Date", "Actual_Leave_Count", "Predicted_Leave_Count", "Naive_Lag1_Prediction"])
+        return empty_metrics, empty_comparison
 
 
 bundle = load_bundle()
 metrics_df, comparison_df = load_evaluation()
 project_paths = get_project_paths(Path(__file__).resolve().parent)
+if not bundle_is_ready(bundle):
+    st.error("The forecasting model bundle is missing from this checkout, so the ML dashboard cannot start.")
+    st.info(
+        f"Expected files: {project_paths['model_path']}, {project_paths['metadata_path']}, "
+        f"{project_paths['data_path']}, {project_paths['employee_master_path']}"
+    )
+    st.info("Restore those files and run retrain_model.py, or open streamlit_sql_visualization.py for the data-only dashboard.")
+    st.stop()
+
 feature_df = bundle["feature_df"]
 metadata = bundle.get("metadata", {})
 feature_importance_df = load_feature_importance_from_metadata(metadata)
@@ -1657,7 +1739,7 @@ if forecast_type == "Weekly":
 if required_present_input > total_workforce_input:
     st.warning("Required present workforce is higher than current total workforce. The planner will show a staffing gap unless you increase available headcount.")
 
-st.info(
+st.caption(
     f"Model artifact: {project_paths['model_path'].name} | Data source: {project_paths['data_path'].name} | Employee master: {project_paths['employee_master_path'].name} | Historical coverage through {last_observed_date}"
 )
 
